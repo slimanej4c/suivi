@@ -11,13 +11,13 @@
 </head>
 <body>
 <aside class="sidebar">
-  <a class="brand" href="#dashboard"><span class="brand-mark" aria-hidden="true">▤</span><span>Carnet<span>Projets</span><small>Espace de travail</small></span></a>
+  <a class="brand" href="#projects"><span class="brand-mark" aria-hidden="true">▤</span><span>Carnet<span>Projets</span><small>Espace de travail</small></span></a>
   <p class="nav-label">ESPACE DE TRAVAIL</p>
   <nav aria-label="Navigation principale" id="nav"></nav>
   <div class="sidebar-foot"><span class="lock-mark" aria-hidden="true">◇</span><div><strong>Espace privé</strong><small>Données liées à votre compte</small></div></div>
 </aside>
 <div class="shell">
-  <header class="topbar"><div class="breadcrumbs" id="crumb"></div><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Rechercher dans le carnet…" aria-label="Rechercher dans le carnet"></label></header>
+  <header class="topbar"><div class="breadcrumbs" id="crumb"></div><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Rechercher un projet…" aria-label="Rechercher un projet"></label><button type="button" id="logout" class="secondary">Se déconnecter</button></header>
   <main id="main" tabindex="-1"><p>Chargement du carnet…</p></main>
 </div>
 <div id="toast" role="status"></div>
@@ -32,7 +32,7 @@
 <dialog id="reveal" aria-labelledby="reveal-title">
   <form id="reveal-form">
     <div class="dialog-head"><h2 id="reveal-title">Déverrouiller le mot de passe</h2><button type="button" class="icon" data-close aria-label="Fermer">×</button></div>
-    <div class="fields"><label>Phrase secrète<input name="phrase" type="password" required autocomplete="off"></label><label>Mot de passe déchiffré<input name="value" readonly autocomplete="off" placeholder="Visible après déverrouillage"></label></div>
+    <div class="fields"><label>Phrase secrète<input name="phrase" type="password" required autocomplete="off"></label><label><span id="revealed-label">Mot de passe déchiffré</span><input name="value" readonly autocomplete="off" placeholder="Visible après déverrouillage"></label></div>
     <p class="error" id="reveal-error" role="alert"></p>
     <footer class="dialog-foot"><button type="button" class="secondary" data-close>Fermer</button><button class="primary" type="submit">Déverrouiller</button></footer>
   </form>

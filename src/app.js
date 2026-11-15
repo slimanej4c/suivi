@@ -1,7 +1,12 @@
 const labels = {
   dashboard:['Tableau de bord','◫'], clients:['Clients','◎'], projects:['Projets','▣'],
-  actions:['Plans d’action','✓'], notes:['Notes et réserves','▤'], access:['Accès techniques','◇'], tests:['Tests','⚗'],
+  actions:['Plans d’action','✓'], notes:['Notes et réserves','▤'], access:['Serveur','◇'], tests:['Tests','⚗'],
 };
+const commandType = 'Commande';
+const serviceTypes = {commands:commandType,github:'GitHub',api:'Clé API',stripe:'Stripe',firebase:'Firebase',supabase:'Supabase',mysql:'MySQL'};
+for (const [section,type] of Object.entries(serviceTypes)) {
+  labels[section] = [section === 'api' ? 'API' : section === 'commands' ? 'Commandes' : type, section === 'commands' ? '›_' : '◇'];
+}
 const singular = {clients:'Client',projects:'Projet',actions:'Action',notes:'Note ou réserve',access:'Accès technique',tests:'Test'};
 const hosting = ['Serveur du client','Notre serveur','Fournisseur externe','À confirmer'];
 const schemas = {
@@ -9,7 +14,20 @@ const schemas = {
   projects:[['name','Nom'],['status','Statut',['À planifier','En cours','En attente','Terminé']],['website','Site web','url'],['hosting','Hébergement',hosting],['date','Échéance','date'],['description','Objectifs et informations','textarea']],
   actions:[['name','Titre'],['status','Statut',['À faire','En cours','Bloqué','Terminé']],['date','Échéance','date'],['assignee','Responsable'],['priority','Priorité',['Normale','Haute','Basse']],['description','Détails et prochaine étape','textarea']],
   notes:[['name','Titre'],['type','Type',['Note','Remarque','Réserve','Décision']],['date','Date','date'],['description','Contenu','textarea']],
-  access:[['name','Service ou serveur'],['type','Type',['Administration web','Hébergement','SSH / SFTP','DNS','Base de données','Autre']],['hosting','Emplacement',hosting],['url','Lien de connexion','url'],['username','Identifiant'],['reference','Référence dans un gestionnaire de mots de passe'],['description','Informations sur l’accès','textarea']],
+  access:[
+    ['name','Nom de l’accès'],
+    ['type','Type',['GitHub','Clé API','Stripe','Firebase','Supabase','MySQL','Connexion à un site','SSH / SFTP','Administration web','Hébergement','DNS','Base de données','Autre']],
+    ['environment','Environnement',['À préciser','Local','Préproduction','Production','Commun']],
+    ['hosting','Propriétaire du serveur',hosting],
+    ['url','URL du dépôt, du site ou de l’API','url'],
+    ['username','Compte ou identifiant'],
+    ['host','Hôte ou adresse du serveur'],
+    ['branch','Branche Git'],
+    ['path','Chemin du projet sur la machine'],
+    ['reference','Référence ou lien vers votre gestionnaire de mots de passe'],
+    ['commands','Commandes utiles','textarea'],
+    ['description','Instructions et informations sur l’accès','textarea'],
+  ],
   tests:[['name','Scénario'],['status','Résultat',['À tester','Réussi','Échoué','Bloqué']],['date','Date du test','date'],['environment','Environnement',['Local','Préproduction','Production']],['expected','Étapes et résultat attendu','textarea'],['description','Résultat observé et correctifs','textarea']],
 };
 const $ = selector => document.querySelector(selector);
@@ -21,10 +39,11 @@ const reveal = $('#reveal');
 const revealForm = $('#reveal-form');
 let records = [];
 let ready = false;
+let csrf;
 let editing;
 let revealing;
 let toastTimer;
-let clientFilter = '';
+let activeProject;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const find = id => records.find(record => record.id === id);
 const list = kind => records.filter(record => record.kind === kind);
@@ -57,7 +76,10 @@ function toast(message) {
   toastTimer = setTimeout(() => { $('#toast').textContent = ''; },4000);
 }
 async function request(path='', options) {
-  const response = await fetch('/api/records'+path, options);
+  const headers = new Headers(options?.headers);
+  if (options?.method) headers.set('X-CSRF-Token', csrf);
+  const response = await fetch('/api/records'+path, {...options, headers});
+  if (response.status === 401) location.assign('/connexion');
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Une erreur est survenue. Réessayez.');
   return data;
@@ -80,68 +102,145 @@ function rows(items, empty, summary=false) {
       record.date ? date(record.date) : '',
       esc(record.hosting),esc(record.environment),esc(record.assignee),esc(record.email),esc(record.phone),
     ].filter(Boolean).join(' · ');
+    const accessLink = record.type === 'GitHub' ? 'Ouvrir le dépôt' : 'Ouvrir la connexion';
     const controls = summary
       ? (linked ? '<a class="secondary" href="'+route(kind,id)+'">Ouvrir</a>' : '<a class="secondary" href="'+route('projects',parent,kind)+'">Ouvrir</a>')
       : (secret ? button('Déverrouiller','reveal',id) : '')+button('Modifier','edit',id)+button('Supprimer','remove',id,'icon danger');
     return '<li class="row"><div><div class="row-title">'+nameHtml+badge(status || type)+badge(record.priority === 'Haute' ? 'Haute' : '')+'</div>'+
       (details ? '<p>'+details+'</p>' : '')+
       (!summary ? [
-        urlLink(record.website,'Ouvrir le site'),urlLink(record.url,'Ouvrir la connexion'),
+        urlLink(record.website,'Ouvrir le site'),urlLink(record.url,accessLink),
+        record.host ? 'Hôte · '+esc(record.host) : '',
+        record.branch ? 'Branche · '+esc(record.branch) : '',
+        record.path ? 'Dossier · '+esc(record.path) : '',
         record.username ? 'Identifiant · '+esc(record.username) : '',
         record.reference ? 'Référence · '+esc(record.reference) : '',
         record.expected ? 'Attendu · '+esc(record.expected) : '',
-        secret ? 'Mot de passe chiffré' : '',esc(description),
+        secret ? 'Identifiant secret chiffré' : '',esc(description),
       ].filter(Boolean).map(value => '<p>'+value+'</p>').join('') : '')+
+      (!summary && kind === 'access' && record.commands
+        ? '<details class="commands"'+(type === commandType ? ' open' : '')+'><summary>Commandes enregistrées</summary><pre>'+esc(record.commands)+'</pre>'+
+          button('Copier les commandes','copy',id)+'</details>' : '')+
+      (!summary && kind === 'access' ? accessLines(record).map(({label,value},index) =>
+        '<details class="commands"><summary>'+esc(label)+'</summary><pre>'+esc(value)+'</pre>'+
+        button('Copier','copy-line',id+':'+index)+'</details>').join('') : '')+
       '</div><div class="row-actions">'+controls+'</div></li>';
   }).join('')+'</ul>';
 }
-function dashboard() {
+const projectSections = ['dashboard','actions','notes','access',...Object.keys(serviceTypes),'tests'];
+const projectHref = (id, section='dashboard') => route('projects',id,section);
+const testAccountType = 'Compte de test';
+function serviceSection(record) {
+  if (record.type === testAccountType) return 'testAccounts';
+  return Object.keys(serviceTypes).find(section => serviceTypes[section] === record.type) ?? 'access';
+}
+function projectItems(project, section) {
+  const isAccess = section === 'access' || section === 'testAccounts' || Object.hasOwn(serviceTypes,section);
+  return list(isAccess ? 'access' : section).filter(record =>
+    record.parent === project.id && (!isAccess || serviceSection(record) === section));
+}
+function accessLines(record) {
+  try {
+    const lines = JSON.parse(record?.lines || '[]');
+    return Array.isArray(lines) ? lines.filter(line => typeof line?.label === 'string' && typeof line.value === 'string') : [];
+  } catch { return []; }
+}
+function lineField(line = {label:'',value:''}) {
+  return '<div class="access-line"><label>Titre de la ligne<input name="lineTitle" maxlength="160" placeholder="Ex. Mise à jour en production" value="'+esc(line.label)+'"></label>'+
+    '<label>Contenu<textarea name="lineValue" maxlength="8000">'+esc(line.value)+'</textarea></label>'+
+    '<button type="button" class="secondary" data-remove-line>Retirer la ligne</button></div>';
+}
+const keyTypes = ['Clé API','Stripe','Firebase','Supabase'];
+
+
+function projectDashboard(project) {
+  const actions = projectItems(project,'actions').filter(isOpen);
+  const next = actions.sort((a,b) => (a.date || '9999').localeCompare(b.date || '9999')).slice(0,4);
   const metrics = [
-    ['clients','Clients',list('clients').length],['projects','Projets ouverts',list('projects').filter(isOpen).length],
-    ['actions','Actions ouvertes',list('actions').filter(isOpen).length],['tests','Tests à traiter',list('tests').filter(isOpen).length],
+    ['actions','Actions ouvertes',actions.length],
+    ['notes','Notes et réserves',projectItems(project,'notes').length],
+    ['access','Serveurs et connexions',projectItems(project,'access').length],
+    ['tests','Tests à traiter',projectItems(project,'tests').filter(isOpen).length],
   ];
-  const next = list('actions').filter(isOpen).sort((a,b) => (a.date || '9999').localeCompare(b.date || '9999')).slice(0,4);
-  return heading('Tableau de bord','Retrouvez vos dossiers et les prochaines étapes.',button('+ Nouveau projet','new','projects','primary'))+
-    '<section class="hero"><p class="eyebrow">CARNET PROJETS</p><h2>Votre suivi client, au même endroit.</h2><p>Regroupez les décisions, les accès et le travail à venir dans chaque dossier client.</p>'+
-    '<a class="secondary" href="#clients">Voir les clients →</a></section>'+
-    '<div class="stats">'+metrics.map(([kind,label,count]) => '<a class="stat" href="'+route(kind)+'"><span class="symbol" aria-hidden="true">'+labels[kind][1]+'</span><strong>'+count+'</strong><small>'+label+'</small></a>').join('')+'</div>'+
-    '<div class="board">'+panel('Projets récents','Derniers dossiers mis à jour',rows(list('projects').slice(0,4),'Créez un client, puis ajoutez son premier projet.',true),'<a href="#projects">Tous les projets →</a>')+
-    panel('Prochaines actions','Classées par échéance',rows(next,'Aucune action ouverte.',true),'<a href="#actions">Toutes les actions →</a>')+'</div>';
+  const client = find(project.parent);
+  const info = [
+    client ? '<span>'+esc(client.name)+'</span>' : '',
+    project.hosting ? '<span>'+esc(project.hosting)+'</span>' : '',
+    project.date ? '<span>Échéance · '+date(project.date)+'</span>' : '',
+    urlLink(project.website,'Ouvrir le site'),
+  ].filter(Boolean).join('');
+  return heading(project.name,project.status,button('Modifier le projet','edit',project.id))+
+    (info ? '<div class="details">'+info+'</div>' : '')+
+    (project.description ? '<p class="description">'+esc(project.description)+'</p>' : '')+
+    '<div class="stats">'+metrics.map(([kind,label,count]) => '<a class="stat" href="'+projectHref(project.id,kind)+'"><span class="symbol" aria-hidden="true">'+labels[kind][1]+'</span><strong>'+count+'</strong><small>'+label+'</small></a>').join('')+'</div>'+
+    panel('Prochaines actions','Classées par échéance',rows(next,'Aucune action ouverte.',true),'<a href="'+projectHref(project.id,'actions')+'">Toutes les actions →</a>');
 }
-function details(record, tab) {
-  const {kind,id,name,parent} = record;
-  const client = kind === 'clients' ? record : find(parent);
-  const tags = [record.email,record.phone,record.hosting,record.date ? 'Échéance · '+date(record.date) : ''].filter(Boolean);
-  const info = '<div class="details">'+tags.map(value=>'<span>'+esc(value)+'</span>').join('')+urlLink(record.website,'Ouvrir le site')+'</div>';
-  const top = heading(name,kind === 'projects' ? (client?.name || '')+' · '+record.status : 'Dossier client',button('Modifier la fiche','edit',id));
-  const description = record.description ? '<p class="description">'+esc(record.description)+'</p>' : '';
-  if (kind === 'clients') {
-    return top+info+description+panel('Projets du client','',rows(list('projects').filter(project=>project.parent===id),'Aucun projet pour ce client.'),button('+ Projet','new','projects:'+id,'primary'));
-  }
-  const tabs = ['actions','notes','access','tests'];
-  const selected = tabs.includes(tab) ? tab : 'actions';
-  return top+info+description+'<div class="tabs" aria-label="Sections du projet">'+tabs.map(key=>'<a href="'+route('projects',id,key)+'"'+(key===selected?' aria-current="page"':'')+'>'+labels[key][0]+'</a>').join('')+'</div>'+
-    panel(labels[selected][0],'',rows(list(selected).filter(item=>item.parent===id),'Aucun élément dans cette section.'),button('+ Ajouter','new',selected+':'+id,'primary'));
+
+function projectPicker(items, empty) {
+  if (!items.length) return panel('Projets','',rows([],empty));
+  return '<div class="project-grid">'+items.map(project =>
+    '<a class="project-card panel" href="'+projectHref(project.id)+'"><span class="project-icon" aria-hidden="true">▣</span>'+
+    '<h2>'+esc(project.name)+'</h2><p>'+esc(find(project.parent)?.name)+'</p><div>'+badge(project.status)+'<span class="open-project">Ouvrir →</span></div></a>'
+  ).join('')+'</div>';
 }
+
+function navLink(kind, href, current) {
+  return '<a href="'+href+'"'+(current?' aria-current="page"':'')+'><span class="glyph" aria-hidden="true">'+labels[kind][1]+'</span>'+labels[kind][0]+'</a>';
+}
+
+function matches(record, query) {
+  return Object.entries(record).some(([key,value]) =>
+    !['secret','id','kind','parent','updated'].includes(key) && String(value ?? '').toLocaleLowerCase('fr').includes(query));
+}
+
 function render() {
-  const [raw='dashboard',id,tab] = location.hash.slice(1).split('/');
-  const view = Object.hasOwn(labels,raw) ? raw : 'dashboard';
-  const current = find(id);
-  $('#nav').innerHTML = Object.entries(labels).map(([key,[label,glyph]])=>'<a href="'+route(key)+'"'+(view===key?' aria-current="page"':'')+'><span class="glyph" aria-hidden="true">'+glyph+'</span>'+label+'</a>').join('');
-  $('#crumb').innerHTML = '<a href="#dashboard">Espace de travail</a> &nbsp;/&nbsp; <strong>'+labels[view][0]+'</strong>';
   if (!ready) return;
+  const [view,id,tab] = location.hash.slice(1).split('/');
+  const project = view === 'projects' && id && find(id)?.kind === 'projects' ? find(id) : null;
+  const section = projectSections.includes(tab) ? tab : 'dashboard';
+  activeProject = project;
+  const clientView = view === 'clients' && !project;
   const query = search.value.trim().toLocaleLowerCase('fr');
-  if (query) {
-    const results = records.filter(record => Object.entries(record).some(([key,value]) => !['secret','id','kind','parent','updated'].includes(key) && value.toLocaleLowerCase('fr').includes(query)));
-    main.innerHTML = heading('Résultats de recherche',results.length+' fiche(s) trouvée(s)')+panel('Correspondances','',rows(results,'Aucun résultat pour cette recherche.'));
-  } else if (view === 'dashboard') {
-    main.innerHTML = dashboard();
-  } else if (id && ['clients','projects'].includes(view)) {
-    main.innerHTML = current?.kind === view ? details(current,tab) : heading('Fiche introuvable','Ce dossier a peut-être été supprimé.');
+  $('#nav').innerHTML = project
+    ? '<a class="back-projects" href="#projects">← Tous les projets</a><div class="active-project">'+esc(project.name)+'</div>'+
+      projectSections.map(kind => navLink(kind,projectHref(project.id,kind),kind===section)).join('')
+    : navLink('projects','#projects',!clientView)+navLink('clients','#clients',clientView);
+  $('#crumb').innerHTML = project
+    ? '<a href="#projects">Projets</a> / <strong>'+esc(project.name)+'</strong>'+(section==='dashboard'?'':' / '+labels[section][0])
+    : '<strong>'+(clientView?'Clients':'Projets')+'</strong>';
+  search.placeholder = project ? 'Rechercher dans ce projet…' : clientView ? 'Rechercher un client…' : 'Rechercher un projet…';
+  search.setAttribute('aria-label',search.placeholder.slice(0,-1));
+  document.title = (project ? project.name : clientView ? 'Clients' : 'Projets')+' · Carnet Projets';
+
+  if (project && query) {
+    const results = records.filter(record => record.parent === project.id && matches(record,query));
+    main.innerHTML = heading('Recherche dans '+project.name,results.length+' résultat(s)')+
+      panel('Correspondances','',rows(results,'Aucun résultat dans ce projet.'));
+  } else if (project) {
+    main.innerHTML = section === 'dashboard' ? projectDashboard(project) :
+      heading(labels[section][0],project.name,section === 'access'
+        ? button('+ Serveur','new','access:'+project.id+':SSH / SFTP','primary')+
+          button('+ Connexion à un site','new','access:'+project.id+':Connexion à un site')
+        : Object.hasOwn(serviceTypes,section)
+          ? button(section === 'commands' ? '+ Commande' : '+ Ajouter','new','access:'+project.id+':'+serviceTypes[section],'primary')
+          : button('+ Ajouter','new',section+':'+project.id,'primary'))+
+      panel(labels[section][0],'',rows(projectItems(project,section),'Aucun élément dans cette section.'))+
+      (section === 'actions' ? '<div class="test-accounts">'+
+        panel('Comptes de test','',rows(projectItems(project,'testAccounts'),'Aucun compte de test.'),
+          button('+ Compte de test','new','access:'+project.id+':'+testAccountType))+'</div>' : '');
+  } else if (clientView) {
+    const client = find(id);
+    main.innerHTML = client?.kind === 'clients' && !query
+      ? heading(client.name,'Dossier client',button('Modifier la fiche','edit',client.id)+button('+ Nouveau projet','new','projects:'+client.id,'primary'))+
+        '<div class="details">'+[client.email,client.phone].filter(Boolean).map(value=>'<span>'+esc(value)+'</span>').join('')+urlLink(client.website,'Ouvrir le site')+'</div>'+
+        (client.description?'<p class="description">'+esc(client.description)+'</p>':'')+
+        projectPicker(list('projects').filter(item=>item.parent===client.id),'Aucun projet pour ce client.')
+      : heading('Clients','Retrouvez les dossiers de vos clients.',button('+ Nouveau client','new','clients','primary'))+
+        panel('Clients','',rows(list('clients').filter(item=>matches(item,query)),'Aucun client trouvé.'));
   } else {
-    const filters = view === 'clients' ? '' : '<div class="filters"><label>Client <select id="client-filter"><option value="">Tous les clients</option>'+list('clients').map(record=>'<option value="'+record.id+'"'+(record.id===clientFilter?' selected':'')+'>'+esc(record.name)+'</option>').join('')+'</select></label></div>';
-    const items = list(view).filter(record=>!clientFilter || view==='clients' || (view==='projects'?record.parent:find(record.parent)?.parent)===clientFilter);
-    main.innerHTML = heading(labels[view][0],items.length+' fiche(s)',button('+ Ajouter','new',view,'primary'))+filters+panel('Toutes les fiches','',rows(items,'Aucune fiche dans cette section.'));
+    main.innerHTML = heading('Vos projets','Choisissez un projet pour ouvrir son espace de travail.',button('+ Nouveau projet','new','projects','primary'))+
+      projectPicker(list('projects').filter(item=>matches(item,query) || matches(find(item.parent) ?? {},query)),
+        query ? 'Aucun projet trouvé.' : 'Ajoutez un client, puis créez votre premier projet.');
   }
 }
 function field([key,label,type='text'], value, required=false) {
@@ -156,24 +255,61 @@ function field([key,label,type='text'], value, required=false) {
   }
   return '<label>'+esc(label)+input+'</label>';
 }
-function openEditor(kind, parent='', original) {
+function openEditor(kind, parent='', original, accessType) {
   const parentKind = kind === 'clients' ? null : kind === 'projects' ? 'clients' : 'projects';
-  const parents = parentKind ? list(parentKind) : [];
+  const fixedProject = parentKind === 'projects' ? activeProject : null;
+  const parents = fixedProject ? [fixedProject] : parentKind ? list(parentKind) : [];
   if (parentKind && !parents.length) {
     toast(kind === 'projects' ? 'Ajoutez d’abord un client.' : 'Ajoutez d’abord un projet.');
     if (kind === 'projects') openEditor('clients');
     return;
   }
   editing = {kind,id:original?.id ?? crypto.randomUUID(),original};
-  $('#editor-title').textContent = original ? 'Modifier · '+singular[kind] : 'Ajouter · '+singular[kind];
+  const isTestAccount = (original?.type ?? accessType) === testAccountType;
+  const isCommand = kind === 'access' && (original?.type ?? accessType) === commandType;
+  const title = isCommand ? commandType : isTestAccount ? testAccountType : singular[kind];
+  $('#editor-title').textContent = (original ? 'Modifier · ' : 'Ajouter · ')+title;
   $('#form-error').textContent = '';
-  const selected = original?.parent || parent || (kind==='projects'?clientFilter:'');
-  const parentField = parentKind ? '<label>'+singular[parentKind]+'<select name="parent" required>'+parents.map(item => '<option value="'+item.id+'"'+(item.id===selected?' selected':'')+'>'+esc(item.name)+(parentKind==='projects'?' · '+esc(find(item.parent)?.name):'')+'</option>').join('')+'</select></label>' : '';
-  const secretFields = kind === 'access' ? '<label>Mot de passe'+
+  const selected = original?.parent || parent || fixedProject?.id || '';
+  const parentField = fixedProject
+    ? '<input type="hidden" name="parent" value="'+fixedProject.id+'">'
+    : parentKind ? '<label>'+singular[parentKind]+'<select name="parent" required>'+parents.map(item => '<option value="'+item.id+'"'+(item.id===selected?' selected':'')+'>'+esc(item.name)+(parentKind==='projects'?' · '+esc(find(item.parent)?.name):'')+'</option>').join('')+'</select></label>' : '';
+  const secretFields = kind === 'access' ? '<label><span id="secret-label">Mot de passe</span>'+
     '<input name="password" type="password" autocomplete="new-password" maxlength="2048" placeholder="'+(original?.secret?'Laisser vide pour conserver':'Facultatif')+'"></label>'+
-    '<label id="phrase-field" hidden>Phrase secrète de chiffrement<input name="phrase" type="password" autocomplete="new-password" minlength="14" maxlength="256"><small>Choisissez au moins 14 caractères. Gardez cette phrase pour déverrouiller le mot de passe. Elle ne peut pas être récupérée.</small></label>'+
-    (original?.secret?'<label>Retirer le mot de passe enregistré <input type="checkbox" name="clearSecret"></label>':'') : '';
-  $('#fields').innerHTML = parentField+schemas[kind].map(config=>field(config,original?.[config[0]],config[0]==='name')).join('')+secretFields;
+    '<label id="phrase-field" hidden>Phrase secrète de chiffrement<input name="phrase" type="password" autocomplete="new-password" minlength="14" maxlength="256"><small>Choisissez au moins 14 caractères. Gardez cette phrase pour déverrouiller la valeur enregistrée. Elle ne peut pas être récupérée.</small></label>'+
+    (original?.secret?'<label>Retirer la valeur enregistrée <input type="checkbox" name="clearSecret"></label>':'') : '';
+  const values = original ?? {
+    type:accessType,
+    date:new Intl.DateTimeFormat('sv-SE', {timeZone:'America/Toronto'}).format(new Date()),
+  };
+  if (isCommand) {
+    const commandFields = [
+      ['name','Titre'],
+      ['environment','Environnement',['À préciser','Local','Préproduction','Production','Commun']],
+      ['path','Dossier de travail'],
+      ['commands','Commande à copier dans le terminal','textarea'],
+      ['description','Note','textarea'],
+    ];
+    $('#fields').innerHTML = parentField+'<input type="hidden" name="type" value="'+commandType+'">'+
+      commandFields.map(config => field(config,values[config[0]],['name','commands'].includes(config[0]))).join('');
+  } else if (kind === 'access') {
+    const type = values.type || 'Autre';
+    const basic = ['name','url','username'];
+    if (isTestAccount || serviceSection({type}) === 'access') basic.push('environment');
+    const configs = schemas.access.filter(([key]) => basic.includes(key));
+    const extra = schemas.access.filter(([key]) => !basic.includes(key) && key !== 'type');
+    const extraFields = extra.filter(([key]) => values[key]).map(config => field(config,values[config[0]])).join('');
+    $('#fields').innerHTML = parentField+'<input type="hidden" name="type" value="'+esc(type)+'">'+
+      configs.map(config => field(config,values[config[0]],config[0]==='name')).join('')+secretFields+
+      (extraFields ? '<details><summary>Informations existantes</summary>'+extraFields+'</details>' : '')+
+      '<small>Placez les mots de passe et les clés dans le champ chiffré ci-dessus.</small>'+
+      '<div id="access-lines">'+accessLines(original).map(lineField).join('')+'</div>'+
+      '<button type="button" class="secondary" data-add-line>+ Ajouter une ligne</button>';
+  } else {
+    $('#fields').innerHTML = parentField+schemas[kind].map(config =>
+      field(config,values[config[0]],config[0]==='name')).join('');
+  }
+  if (kind === 'access' && !isCommand) updateSecretLabel();
   editor.showModal();
 }
 const encode = new TextEncoder();
@@ -190,6 +326,11 @@ async function encrypt(password,phrase) {
   const cipher = await crypto.subtle.encrypt({name:'AES-GCM',iv},key,encode.encode(password));
   return ['v1',base64(salt),base64(iv),base64(new Uint8Array(cipher))].join('.');
 }
+function updateSecretLabel() {
+  $('#secret-label').textContent = keyTypes.includes(form.elements.namedItem('type').value)
+    ? 'Clé API ou jeton' : 'Mot de passe ou jeton';
+  if (form.elements.namedItem('type').value === testAccountType) $('#secret-label').textContent = 'Mot de passe';
+}
 form.addEventListener('input', event => {
   if (event.target.name !== 'password') return;
   const field = $('#phrase-field');
@@ -199,22 +340,34 @@ form.addEventListener('input', event => {
 form.addEventListener('submit',async event=>{
   event.preventDefault();
   const {kind,id,original} = editing;
-  const input = Object.fromEntries(new FormData(form));
+  const formData = new FormData(form);
+  const input = Object.fromEntries(formData);
   const submit = form.querySelector('[type=submit]');
   submit.disabled = true;
   $('#form-error').textContent = '';
   try {
-    if (kind === 'access') {
+    if (input.type === commandType && kind === 'access' && !input.commands.trim()) {
+      throw new Error('Saisissez une commande.');
+    }
+    if (kind === 'access' && input.type !== commandType) {
+      const titles = formData.getAll('lineTitle');
+      const lines = formData.getAll('lineValue').map((value,index) => ({
+        label:titles[index].trim() || 'Note '+(index+1), value:value.trim(),
+      })).filter(line => line.value);
+      input.lines = JSON.stringify(lines);
+      delete input.lineTitle;
+      delete input.lineValue;
       input.secret = input.password ? await encrypt(input.password,input.phrase) : input.clearSecret ? '' : original?.secret || '';
       delete input.password;
       delete input.phrase;
       delete input.clearSecret;
     }
-    const record = await request('/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...input,kind,updated:original?.updated})});
+    const record = await request('/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...original,...input,kind,updated:original?.updated})});
     records = [record,...records.filter(item=>item.id!==id)];
     editor.close();
     search.value = '';
-    if (!original && ['clients','projects'].includes(kind)) location.hash = route(kind,id);
+    if (!original && kind === 'projects') location.hash = projectHref(id);
+    else if (!original && kind === 'clients') location.hash = route(kind,id);
     else render();
     toast('Fiche enregistrée.');
   } catch(error) { $('#form-error').textContent = error.message; }
@@ -231,7 +384,7 @@ revealForm.addEventListener('submit',async event=>{
     const key = await keyFor(revealForm.elements.phrase.value,salt);
     const plain = await crypto.subtle.decrypt({name:'AES-GCM',iv},key,cipher);
     if (reveal.open) revealForm.elements.value.value = new TextDecoder().decode(plain);
-  } catch { if (reveal.open) $('#reveal-error').textContent = 'Phrase secrète incorrecte ou mot de passe illisible.'; }
+  } catch { if (reveal.open) $('#reveal-error').textContent = 'Phrase secrète incorrecte ou valeur illisible.'; }
   finally { revealForm.elements.phrase.value = ''; submit.disabled = false; }
 });
 document.addEventListener('click',async event=>{
@@ -239,14 +392,40 @@ document.addEventListener('click',async event=>{
   if (!control) return;
   const {dataset} = control;
   if ('close' in dataset) control.closest('dialog').close();
-  if (dataset.new) openEditor(...dataset.new.split(':'));
+  if (dataset.new) {
+    const [kind,parent,accessType] = dataset.new.split(':');
+    openEditor(kind,parent,undefined,accessType);
+  }
+  if ('addLine' in dataset) {
+    $('#access-lines').insertAdjacentHTML('beforeend',lineField());
+    $('#access-lines').lastElementChild.querySelector('input').focus();
+  }
+  if ('removeLine' in dataset) control.closest('.access-line').remove();
+  if (dataset.copy || dataset.copyLine) {
+    const [id,index] = (dataset.copyLine || dataset.copy).split(':');
+    const record = find(id);
+    const commands = dataset.copyLine ? accessLines(record)[index]?.value : record?.commands;
+    if (!commands) return;
+    try {
+      await navigator.clipboard.writeText(commands);
+      toast('Texte copié.');
+    } catch {
+      toast('Sélectionnez et copiez le texte des commandes.');
+    }
+  }
   if (dataset.edit) {
     const record = find(dataset.edit);
     if (record) openEditor(record.kind,record.parent,record);
   }
   if (dataset.reveal) {
-    revealing = find(dataset.reveal)?.secret;
-    if (revealing) reveal.showModal();
+    const record = find(dataset.reveal);
+    revealing = record?.secret;
+    if (revealing) {
+      const apiKey = keyTypes.includes(record.type);
+      $('#reveal-title').textContent = apiKey ? 'Déverrouiller la clé API' : 'Déverrouiller le mot de passe';
+      $('#revealed-label').textContent = apiKey ? 'Clé API déchiffrée' : 'Mot de passe déchiffré';
+      reveal.showModal();
+    }
   }
   if (dataset.remove) {
     const record = find(dataset.remove);
@@ -263,12 +442,34 @@ document.addEventListener('click',async event=>{
 editor.addEventListener('cancel', event=>{ if (form.querySelector('[type=submit]').disabled) event.preventDefault(); });
 editor.addEventListener('close',()=>{ form.reset(); $('#fields').replaceChildren(); });
 reveal.addEventListener('close',()=>{ revealForm.reset(); $('#reveal-error').textContent=''; revealing=''; });
-document.addEventListener('change',event=>{
-  if (event.target.id === 'client-filter') { clientFilter = event.target.value; render(); }
-});
 search.addEventListener('input',render);
-window.addEventListener('hashchange',()=>{ search.value=''; render(); main.focus(); });
+window.addEventListener('hashchange',()=>{
+  if (editor.open) editor.close();
+  if (reveal.open) reveal.close();
+  search.value='';
+  render();
+  main.focus();
+});
 render();
-request().then(data=>{ records=data; ready=true; render(); }).catch(error=>{
+$('#logout').addEventListener('click', async () => {
+  try {
+    const response = await fetch('/api/logout', {method:'POST', headers:{'X-CSRF-Token':csrf}});
+    if (!response.ok) throw new Error('Impossible de fermer la session. Rechargez la page.');
+    location.assign('/connexion');
+  } catch(error) { toast(error.message); }
+});
+async function loadRecords() {
+  const response = await fetch('/api/session');
+  if (response.status === 401) {
+    location.assign('/connexion');
+    return;
+  }
+  if (!response.ok) throw new Error('Impossible de vérifier la session.');
+  ({csrf} = await response.json());
+  records = await request();
+  ready = true;
+  render();
+}
+loadRecords().catch(error=>{
   main.innerHTML=heading('Carnet indisponible',error.message)+'<a class="secondary" href="/">Réessayer</a>';
 });

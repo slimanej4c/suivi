@@ -1,0 +1,28 @@
+CREATE TABLE IF NOT EXISTS accounts (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(254) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  failures INT UNSIGNED NOT NULL DEFAULT 0,
+  retry_after DATETIME(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_as_ci;
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash BINARY(32) PRIMARY KEY,
+  owner BIGINT UNSIGNED NOT NULL,
+  expires DATETIME NOT NULL,
+  INDEX sessions_expires (expires),
+  FOREIGN KEY (owner) REFERENCES accounts(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS records (
+  owner BIGINT UNSIGNED NOT NULL,
+  id CHAR(36) CHARACTER SET ascii NOT NULL,
+  kind VARCHAR(10) NOT NULL,
+  parent CHAR(36) CHARACTER SET ascii,
+  data JSON NOT NULL,
+  updated VARCHAR(32) CHARACTER SET ascii NOT NULL,
+  PRIMARY KEY (owner, id),
+  INDEX records_parent (owner, parent),
+  FOREIGN KEY (owner) REFERENCES accounts(id) ON DELETE CASCADE,
+  FOREIGN KEY (owner, parent) REFERENCES records(owner, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
