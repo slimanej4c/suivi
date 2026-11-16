@@ -7,7 +7,7 @@ const serviceTypes = {commands:commandType,github:'GitHub',api:'Clé API',stripe
 for (const [section,type] of Object.entries(serviceTypes)) {
   labels[section] = [section === 'api' ? 'API' : section === 'commands' ? 'Commandes' : type, section === 'commands' ? '›_' : '◇'];
 }
-const singular = {clients:'Client',projects:'Projet',actions:'Action',notes:'Note ou réserve',access:'Accès technique',tests:'Test'};
+const singular = {clients:'Client',projects:'Projet',actions:'Action',notes:'Note ou réserve',access:'Accès technique',tests:'Élément à vérifier'};
 const hosting = ['Serveur du client','Notre serveur','Fournisseur externe','À confirmer'];
 const schemas = {
   clients:[['name','Nom'],['email','Adresse courriel','email'],['phone','Téléphone','tel'],['website','Site web','url'],['description','Informations et contacts','textarea']],
@@ -28,7 +28,7 @@ const schemas = {
     ['commands','Commandes utiles','textarea'],
     ['description','Instructions et informations sur l’accès','textarea'],
   ],
-  tests:[['name','Scénario'],['status','Résultat',['À tester','Réussi','Échoué','Bloqué']],['date','Date du test','date'],['environment','Environnement',['Local','Préproduction','Production']],['expected','Étapes et résultat attendu','textarea'],['description','Résultat observé et correctifs','textarea']],
+  tests:[['name','Élément à vérifier'],['status','Résultat',['À tester','Conforme','Non conforme','Bloqué']],['date','Date de vérification','date'],['environment','Environnement',['Local','Préproduction','Production']],['expected','Étapes et résultat attendu','textarea'],['description','Résultat observé et correctifs','textarea']],
 };
 const $ = selector => document.querySelector(selector);
 const main = $('#main');
@@ -47,7 +47,19 @@ let activeProject;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const find = id => records.find(record => record.id === id);
 const list = kind => records.filter(record => record.kind === kind);
-const isOpen = record => !['Terminé','Réussi'].includes(record.status);
+const isOpen = record => !['Terminé','Réussi','Conforme'].includes(record.status);
+const torontoCalendar = new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Toronto'});
+const today = () => torontoCalendar.format(new Date());
+const testStatus = status => ({Réussi:'Conforme',Échoué:'Non conforme'})[status] ?? status;
+function verificationDate(record) {
+  if (!record.date || !['Conforme','Non conforme'].includes(testStatus(record.status))) {
+    return 'Aucune vérification enregistrée';
+  }
+  const days = (Date.parse(today()) - Date.parse(record.date)) / 86400000;
+  const age = days === 0 ? 'aujourd’hui' : days === 1 ? 'il y a 1 jour' :
+    days > 1 ? 'il y a '+days+' jours' : '';
+  return 'Dernière vérification · '+date(record.date)+(age?' · '+age:'');
+}
 const date = value => {
   const parsed = new Date(value + 'T12:00:00');
   return Number.isNaN(+parsed) ? esc(value) : new Intl.DateTimeFormat('fr-CA',{dateStyle:'medium',timeZone:'America/Toronto'}).format(parsed);
@@ -67,7 +79,7 @@ function button(label, action, value, style='secondary') {
 }
 function badge(value) {
   if (!value) return '';
-  const style = ['Terminé','Réussi'].includes(value) ? ' done' : ['Bloqué','Échoué','Réserve','Haute'].includes(value) ? ' alert' : '';
+  const style = ['Terminé','Réussi','Conforme'].includes(value) ? ' done' : ['Bloqué','Échoué','Non conforme','Réserve','Haute'].includes(value) ? ' alert' : '';
   return '<span class="badge'+style+'">'+esc(value)+'</span>';
 }
 function toast(message) {
@@ -99,14 +111,14 @@ function rows(items, empty, summary=false) {
     const nameHtml = linked ? '<a href="'+route(kind,id)+'">'+esc(name)+'</a>' : '<strong>'+esc(name)+'</strong>';
     const details = [
       parentRecord ? esc(parentRecord.name) : '',
-      record.date ? date(record.date) : '',
+      kind === 'tests' ? verificationDate(record) : record.date ? date(record.date) : '',
       esc(record.hosting),esc(record.environment),esc(record.assignee),esc(record.email),esc(record.phone),
     ].filter(Boolean).join(' · ');
     const accessLink = record.type === 'GitHub' ? 'Ouvrir le dépôt' : 'Ouvrir la connexion';
     const controls = summary
       ? (linked ? '<a class="secondary" href="'+route(kind,id)+'">Ouvrir</a>' : '<a class="secondary" href="'+route('projects',parent,kind)+'">Ouvrir</a>')
-      : (secret ? button('Déverrouiller','reveal',id) : '')+button('Modifier','edit',id)+button('Supprimer','remove',id,'icon danger');
-    return '<li class="row"><div><div class="row-title">'+nameHtml+badge(status || type)+badge(record.priority === 'Haute' ? 'Haute' : '')+'</div>'+
+      : (secret ? button('Déverrouiller','reveal',id) : '')+(kind === 'tests' ? button('Vérifier aujourd’hui','verify',id) : '')+button('Modifier','edit',id)+button('Supprimer','remove',id,'icon danger');
+    return '<li class="row"><div><div class="row-title">'+nameHtml+badge(kind === 'tests' ? testStatus(status) || 'À tester' : status || type)+badge(record.priority === 'Haute' ? 'Haute' : '')+'</div>'+
       (details ? '<p>'+details+'</p>' : '')+
       (!summary ? [
         urlLink(record.website,'Ouvrir le site'),urlLink(record.url,accessLink),
@@ -255,7 +267,7 @@ function field([key,label,type='text'], value, required=false) {
   }
   return '<label>'+esc(label)+input+'</label>';
 }
-function openEditor(kind, parent='', original, accessType) {
+function openEditor(kind, parent='', original, accessType, verifyToday=false) {
   const parentKind = kind === 'clients' ? null : kind === 'projects' ? 'clients' : 'projects';
   const fixedProject = parentKind === 'projects' ? activeProject : null;
   const parents = fixedProject ? [fixedProject] : parentKind ? list(parentKind) : [];
@@ -278,10 +290,10 @@ function openEditor(kind, parent='', original, accessType) {
     '<input name="password" type="password" autocomplete="new-password" maxlength="2048" placeholder="'+(original?.secret?'Laisser vide pour conserver':'Facultatif')+'"></label>'+
     '<label id="phrase-field" hidden>Phrase secrète de chiffrement<input name="phrase" type="password" autocomplete="new-password" minlength="14" maxlength="256"><small>Choisissez au moins 14 caractères. Gardez cette phrase pour déverrouiller la valeur enregistrée. Elle ne peut pas être récupérée.</small></label>'+
     (original?.secret?'<label>Retirer la valeur enregistrée <input type="checkbox" name="clearSecret"></label>':'') : '';
-  const values = original ?? {
-    type:accessType,
-    date:new Intl.DateTimeFormat('sv-SE', {timeZone:'America/Toronto'}).format(new Date()),
-  };
+  let values = original ?? {type:accessType,date:today()};
+  if (kind === 'tests') {
+    values = {...values,status:testStatus(values.status),date:verifyToday ? today() : values.date};
+  }
   if (isCommand) {
     const commandFields = [
       ['name','Titre'],
@@ -413,9 +425,9 @@ document.addEventListener('click',async event=>{
       toast('Sélectionnez et copiez le texte des commandes.');
     }
   }
-  if (dataset.edit) {
-    const record = find(dataset.edit);
-    if (record) openEditor(record.kind,record.parent,record);
+  if (dataset.edit || dataset.verify) {
+    const record = find(dataset.edit || dataset.verify);
+    if (record) openEditor(record.kind,record.parent,record,undefined,Boolean(dataset.verify));
   }
   if (dataset.reveal) {
     const record = find(dataset.reveal);
